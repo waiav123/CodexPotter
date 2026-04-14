@@ -12,7 +12,8 @@ use codex_protocol::protocol::ErrorEvent;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::TurnCompleteEvent;
 
-const MAX_CONTINUE_RETRIES: u32 = 10;
+const UNLIMITED_RETRY_SENTINEL: u32 = 0;
+const MAX_BACKOFF_SECS: u64 = 300;
 
 /// A plan to retry a failed turn by sending a follow-up `continue` prompt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,6 +21,8 @@ pub struct ContinueRetryPlan {
     /// 1-based attempt number within the current continuous-error streak.
     pub attempt: u32,
     /// Maximum number of attempts allowed before giving up.
+    ///
+    /// `0` means unlimited retries.
     pub max_attempts: u32,
     /// Backoff duration to wait before sending `continue`.
     pub backoff: Duration,
@@ -28,7 +31,6 @@ pub struct ContinueRetryPlan {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ContinueRetryDecision {
     Retry(ContinueRetryPlan),
-    GiveUp { attempts: u32, max_attempts: u32 },
 }
 
 /// Tracks retry/backoff state for "continue after stream disconnect" behavior.
@@ -70,31 +72,25 @@ impl PotterStreamRecovery {
         }
     }
 
-    /// If `error` is retryable, returns a decision describing whether to retry (and how) or give
-    /// up due to exceeding the retry cap.
+    /// If `error` is retryable, returns a decision describing how to retry.
     pub fn plan_retry(&mut self, error: &ErrorEvent) -> Option<ContinueRetryDecision> {
         if !protocol_recovery::is_retryable_stream_error(error) {
             return None;
         }
 
-        if self.continue_sends_since_activity >= MAX_CONTINUE_RETRIES {
-            return Some(ContinueRetryDecision::GiveUp {
-                attempts: self.continue_sends_since_activity,
-                max_attempts: MAX_CONTINUE_RETRIES,
-            });
-        }
-
         let attempt = self.continue_sends_since_activity + 1;
-        let backoff = Duration::from_secs(if self.continue_sends_since_activity == 0 {
+        let backoff_secs = if self.continue_sends_since_activity == 0 {
             0
         } else {
-            1u64 << (self.continue_sends_since_activity - 1)
-        });
+            let shift = self.continue_sends_since_activity.saturating_sub(1);
+            (1u64 << shift.min(62)).min(MAX_BACKOFF_SECS)
+        };
+        let backoff = Duration::from_secs(backoff_secs);
         self.continue_sends_since_activity += 1;
 
         Some(ContinueRetryDecision::Retry(ContinueRetryPlan {
             attempt,
-            max_attempts: MAX_CONTINUE_RETRIES,
+            max_attempts: UNLIMITED_RETRY_SENTINEL,
             backoff,
         }))
     }
@@ -142,17 +138,17 @@ mod tests {
             vec![
                 ContinueRetryPlan {
                     attempt: 1,
-                    max_attempts: 10,
+                    max_attempts: 0,
                     backoff: Duration::from_secs(0),
                 },
                 ContinueRetryPlan {
                     attempt: 2,
-                    max_attempts: 10,
+                    max_attempts: 0,
                     backoff: Duration::from_secs(1),
                 },
                 ContinueRetryPlan {
                     attempt: 3,
-                    max_attempts: 10,
+                    max_attempts: 0,
                     backoff: Duration::from_secs(2),
                 },
             ]
@@ -198,31 +194,29 @@ mod tests {
             plan,
             ContinueRetryPlan {
                 attempt: 1,
-                max_attempts: 10,
+                max_attempts: 0,
                 backoff: Duration::from_secs(0),
             }
         );
     }
 
     #[test]
-    fn plan_retry_gives_up_after_ten_attempts() {
+    fn plan_retry_never_gives_up_and_caps_backoff() {
         let mut state = PotterStreamRecovery::new();
         let err = retryable_error_event();
 
-        for _ in 0..10 {
-            let Some(ContinueRetryDecision::Retry(_)) = state.plan_retry(&err) else {
+        let mut last_plan = None;
+        for _ in 0..20 {
+            let Some(ContinueRetryDecision::Retry(plan)) = state.plan_retry(&err) else {
                 panic!("expected retry plan");
             };
+            last_plan = Some(plan);
         }
 
-        let Some(ContinueRetryDecision::GiveUp {
-            attempts,
-            max_attempts,
-        }) = state.plan_retry(&err)
-        else {
-            panic!("expected give up decision");
-        };
-        assert_eq!((attempts, max_attempts), (10, 10));
+        let last_plan = last_plan.expect("last plan");
+        assert_eq!(last_plan.attempt, 20);
+        assert_eq!(last_plan.max_attempts, 0);
+        assert_eq!(last_plan.backoff, Duration::from_secs(MAX_BACKOFF_SECS));
     }
 
     #[test]

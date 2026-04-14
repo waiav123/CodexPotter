@@ -1949,41 +1949,18 @@ fn handle_codex_event(
         } else if recovery.pending_continue_retry.is_none()
             && let Some(decision) = recovery.stream_recovery.plan_retry(err)
         {
-            match decision {
-                ContinueRetryDecision::Retry(plan) => {
-                    error_is_recoverable = true;
-                    let msg = EventMsg::PotterStreamRecoveryUpdate {
-                        attempt: plan.attempt,
-                        max_attempts: plan.max_attempts,
-                        error_message: err.message.clone(),
-                    };
-                    match recovery.event_mode {
-                        AppServerEventMode::Interactive => pre_forward_events.push(msg),
-                        AppServerEventMode::ExecJson => post_forward_events.push(msg),
-                    }
-                    recovery.pending_continue_retry = Some(plan);
-                }
-                ContinueRetryDecision::GiveUp {
-                    attempts,
-                    max_attempts,
-                } => {
-                    let msg = EventMsg::PotterStreamRecoveryGaveUp {
-                        error_message: err.message.clone(),
-                        attempts,
-                        max_attempts,
-                    };
-                    match recovery.event_mode {
-                        AppServerEventMode::Interactive => pre_forward_events.push(msg),
-                        AppServerEventMode::ExecJson => post_forward_events.push(msg),
-                    }
-                    round_outcome = Some(PotterRoundOutcome::TaskFailed {
-                        message: format!(
-                            "{} (stream recovery gave up after {attempts}/{max_attempts} retries)",
-                            err.message
-                        ),
-                    });
-                }
+            let ContinueRetryDecision::Retry(plan) = decision;
+            error_is_recoverable = true;
+            let msg = EventMsg::PotterStreamRecoveryUpdate {
+                attempt: plan.attempt,
+                max_attempts: plan.max_attempts,
+                error_message: err.message.clone(),
+            };
+            match recovery.event_mode {
+                AppServerEventMode::Interactive => pre_forward_events.push(msg),
+                AppServerEventMode::ExecJson => post_forward_events.push(msg),
             }
+            recovery.pending_continue_retry = Some(plan);
 
             if recovery.event_mode == AppServerEventMode::Interactive {
                 should_forward = false;
@@ -2576,7 +2553,7 @@ mod stream_recovery_tests {
             panic!("expected PotterStreamRecoveryUpdate, got: {:?}", event.msg);
         };
         assert_eq!(attempt, 1);
-        assert_eq!(max_attempts, 10);
+        assert_eq!(max_attempts, 0);
         assert_eq!(
             error_message,
             "stream disconnected before completion: error sending request for url (...)"
@@ -2712,7 +2689,7 @@ mod stream_recovery_tests {
         else {
             panic!("expected PotterStreamRecoveryUpdate, got: {:?}", update.msg);
         };
-        assert_eq!((attempt, max_attempts), (1, 10));
+        assert_eq!((attempt, max_attempts), (1, 0));
         assert!(error_message.contains("Please sign in again."));
         assert!(
             event_rx.try_recv().is_err(),
@@ -2746,7 +2723,7 @@ mod stream_recovery_tests {
     }
 
     #[test]
-    fn stream_recovery_gives_up_after_retry_cap() {
+    fn stream_recovery_keeps_retrying_after_many_attempts() {
         let (event_tx, mut event_rx) = unbounded_channel::<Event>();
         let (action_tx, mut action_rx) = unbounded_channel::<RecoveryAction>();
         let mut recovery = StreamRecoveryContext {
@@ -2780,32 +2757,24 @@ mod stream_recovery_tests {
         );
 
         let event = event_rx.try_recv().expect("expected injected event");
-        let EventMsg::PotterStreamRecoveryGaveUp {
-            error_message,
-            attempts,
+        let EventMsg::PotterStreamRecoveryUpdate {
+            attempt,
             max_attempts,
+            error_message,
         } = event.msg
         else {
-            panic!("expected PotterStreamRecoveryGaveUp, got: {:?}", event.msg);
+            panic!("expected PotterStreamRecoveryUpdate, got: {:?}", event.msg);
         };
         assert!(error_message.contains("stream disconnected before completion"));
-        assert_eq!((attempts, max_attempts), (10, 10));
-
-        let round_finished = event_rx.try_recv().expect("expected round finished marker");
-        assert!(matches!(
-            round_finished.msg,
-            EventMsg::PotterRoundFinished {
-                outcome: PotterRoundOutcome::TaskFailed { .. }
-            }
-        ));
+        assert_eq!((attempt, max_attempts), (11, 0));
 
         assert!(
             event_rx.try_recv().is_err(),
-            "expected Error to be suppressed after giving up"
+            "expected Error to stay suppressed while retrying"
         );
         assert!(
             action_rx.try_recv().is_err(),
-            "expected no continue action after giving up"
+            "expected no continue action until TurnComplete arrives"
         );
     }
 

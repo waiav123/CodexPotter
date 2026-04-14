@@ -36,6 +36,7 @@ use codex_protocol::protocol::PotterProjectOutcome;
 #[derive(Debug)]
 pub struct ExecRunConfig {
     pub rounds: NonZeroUsize,
+    pub strict_rounds: bool,
     pub codex_bin: String,
     pub backend_launch: crate::app_server::AppServerLaunchConfig,
     pub potter_xmodel: bool,
@@ -50,6 +51,7 @@ pub async fn run_exec_human(
 ) -> i32 {
     let ExecRunConfig {
         rounds,
+        strict_rounds,
         codex_bin,
         backend_launch,
         potter_xmodel,
@@ -85,6 +87,7 @@ pub async fn run_exec_human(
         rounds,
         backend_launch,
         potter_xmodel,
+        strict_rounds,
         upstream_cli_args,
     )
     .await
@@ -109,6 +112,7 @@ pub async fn run_exec_human(
                 user_message: prompt,
                 cwd: Some(workdir.to_path_buf()),
                 rounds: Some(rounds_total_u32),
+                strict_rounds,
                 event_mode: Some(crate::app_server::potter::PotterEventMode::Interactive),
             },
             &mut buffered_events,
@@ -216,6 +220,7 @@ pub async fn run_exec_human(
 pub async fn run_exec_json(workdir: &Path, prompt: Option<String>, config: ExecRunConfig) -> i32 {
     let ExecRunConfig {
         rounds,
+        strict_rounds,
         codex_bin,
         backend_launch,
         potter_xmodel,
@@ -251,6 +256,7 @@ pub async fn run_exec_json(workdir: &Path, prompt: Option<String>, config: ExecR
         rounds,
         backend_launch,
         potter_xmodel,
+        strict_rounds,
         upstream_cli_args,
     )
     .await
@@ -275,6 +281,7 @@ pub async fn run_exec_json(workdir: &Path, prompt: Option<String>, config: ExecR
                 user_message: prompt.clone(),
                 cwd: Some(workdir.to_path_buf()),
                 rounds: Some(rounds_total_u32),
+                strict_rounds,
                 event_mode: Some(crate::app_server::potter::PotterEventMode::ExecJson),
             },
             &mut buffered_events,

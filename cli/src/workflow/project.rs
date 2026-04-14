@@ -475,8 +475,9 @@ mod tests {
         assert!(first_main.exists());
 
         let main = std::fs::read_to_string(&first_main).expect("read main");
+        let normalized_main = main.replace("\r\n", "\n");
         assert!(
-            main.contains("---\n\n# Overall Goal"),
+            normalized_main.contains("---\n\n# Overall Goal"),
             "expected YAML front matter to end immediately before the main heading"
         );
         assert!(main.contains("# Overall Goal"));

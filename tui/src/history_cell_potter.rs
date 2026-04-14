@@ -290,7 +290,11 @@ impl HistoryCell for PotterStreamRecoveryRetryCell {
             [Line::from(vec![
                 Span::styled("CodexPotter", potter_style),
                 ": ".into(),
-                format!("retry {}/{}", self.attempt, self.max_attempts).into(),
+                if self.max_attempts == 0 {
+                    format!("retry {}", self.attempt).into()
+                } else {
+                    format!("retry {}/{}", self.attempt, self.max_attempts).into()
+                },
             ])],
             RtOptions::new(width.max(1) as usize)
                 .initial_indent(Line::from("• ".dim()))
@@ -392,7 +396,11 @@ impl HistoryCell for PotterStreamRecoveryUnrecoverableCell {
                 "■ ".red(),
                 Span::styled("CodexPotter", potter_style),
                 ": ".red(),
-                format!("unrecoverable error after {} retries", self.max_attempts).red(),
+                if self.max_attempts == 0 {
+                    "unrecoverable error".red()
+                } else {
+                    format!("unrecoverable error after {} retries", self.max_attempts).red()
+                },
             ])],
             RtOptions::new(width.max(1) as usize).break_words(true),
         );

@@ -28,6 +28,7 @@ pub mod replay_session_config;
 pub mod resume;
 pub mod resume_picker_index;
 pub mod rollout;
+pub mod runtime_log;
 pub mod rollout_resume_index;
 mod round_event_bridge;
 pub mod round_runner;

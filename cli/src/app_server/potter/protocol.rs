@@ -165,6 +165,8 @@ pub struct ProjectStartParams {
     pub cwd: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rounds: Option<u32>,
+    #[serde(default)]
+    pub strict_rounds: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event_mode: Option<PotterEventMode>,
 }
@@ -251,6 +253,8 @@ pub struct ProjectStartRoundsParams {
     pub project_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rounds: Option<u32>,
+    #[serde(default)]
+    pub strict_rounds: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resume_policy: Option<ResumePolicy>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

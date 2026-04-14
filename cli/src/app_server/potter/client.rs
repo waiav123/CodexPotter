@@ -58,6 +58,7 @@ impl PotterAppServerClient {
         rounds: NonZeroUsize,
         launch: crate::app_server::AppServerLaunchConfig,
         potter_xmodel: bool,
+        strict_rounds: bool,
         upstream_cli_args: crate::app_server::UpstreamCodexCliArgs,
     ) -> anyhow::Result<Self> {
         let exe = std::env::current_exe().context("resolve codex-potter executable path")?;
@@ -72,6 +73,7 @@ impl PotterAppServerClient {
                 rounds,
                 launch,
                 potter_xmodel,
+                strict_rounds,
                 &upstream_cli_args,
             ))
             .stdin(Stdio::piped())
@@ -371,6 +373,7 @@ fn potter_app_server_args(
     rounds: NonZeroUsize,
     launch: crate::app_server::AppServerLaunchConfig,
     potter_xmodel: bool,
+    strict_rounds: bool,
     upstream_cli_args: &crate::app_server::UpstreamCodexCliArgs,
 ) -> Vec<String> {
     let mut args = vec![
@@ -384,6 +387,11 @@ fn potter_app_server_args(
 
     if potter_xmodel {
         args.push("--xmodel".to_string());
+    }
+
+    if strict_rounds {
+        args.push("--strict-rounds".to_string());
+        args.push(rounds.get().to_string());
     }
 
     if launch.bypass_approvals_and_sandbox {
@@ -459,6 +467,7 @@ mod tests {
                 bypass_approvals_and_sandbox: false,
             },
             true,
+            false,
             &crate::app_server::UpstreamCodexCliArgs {
                 config_overrides: vec!["foo=1".to_string()],
                 enable_features: vec!["unified_exec".to_string()],
@@ -509,6 +518,7 @@ mod tests {
                 bypass_approvals_and_sandbox: true,
             },
             false,
+            false,
             &crate::app_server::UpstreamCodexCliArgs::default(),
         );
 
@@ -520,6 +530,38 @@ mod tests {
                 "--rounds",
                 "1",
                 "--dangerously-bypass-approvals-and-sandbox",
+                "app-server",
+            ]
+            .into_iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn potter_app_server_args_forward_strict_rounds_when_enabled() {
+        let args = potter_app_server_args(
+            "custom-codex",
+            NonZeroUsize::new(100).expect("nonzero rounds"),
+            crate::app_server::AppServerLaunchConfig {
+                spawn_sandbox: None,
+                thread_sandbox: None,
+                bypass_approvals_and_sandbox: false,
+            },
+            false,
+            true,
+            &crate::app_server::UpstreamCodexCliArgs::default(),
+        );
+
+        assert_eq!(
+            args,
+            vec![
+                "--codex-bin",
+                "custom-codex",
+                "--rounds",
+                "100",
+                "--strict-rounds",
+                "100",
                 "app-server",
             ]
             .into_iter()

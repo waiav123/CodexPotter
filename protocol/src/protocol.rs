@@ -158,7 +158,7 @@ pub enum EventMsg {
     PotterStreamRecoveryUpdate {
         /// 1-based attempt number within the current continuous-error streak.
         attempt: u32,
-        /// Maximum number of attempts allowed before giving up.
+        /// Maximum number of attempts allowed before giving up. `0` means unlimited retries.
         max_attempts: u32,
         /// The retryable error message that triggered this update.
         error_message: String,
@@ -176,7 +176,7 @@ pub enum EventMsg {
         error_message: String,
         /// Total attempts made within the continuous-error streak.
         attempts: u32,
-        /// Maximum number of attempts allowed before giving up.
+        /// Maximum number of attempts allowed before giving up. `0` means unlimited retries.
         max_attempts: u32,
     },
 

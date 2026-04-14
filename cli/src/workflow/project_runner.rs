@@ -27,6 +27,8 @@ const PROGRESS_FILE_CHANGED_TURN_PROMPT_OVERRIDE: &str = "Progress file has been
 pub struct ProjectQueueOptions {
     /// Round budget per project (passed to `project/start`).
     pub rounds: NonZeroUsize,
+    /// Ignore early completion until the final configured round.
+    pub strict_rounds: bool,
     /// Per-round prompt passed to the TUI renderer.
     pub turn_prompt: String,
 }
@@ -246,6 +248,7 @@ where
                 user_message: user_prompt.clone(),
                 cwd: Some(workdir.clone()),
                 rounds: Some(rounds_total_u32),
+                strict_rounds: options.strict_rounds,
                 event_mode: Some(crate::app_server::potter::PotterEventMode::Interactive),
             })
             .await
@@ -844,6 +847,7 @@ mod tests {
             temp.path().to_path_buf(),
             ProjectQueueOptions {
                 rounds: NonZeroUsize::new(1).expect("rounds"),
+                strict_rounds: false,
                 turn_prompt: String::from("Continue"),
             },
             &clock,
@@ -874,6 +878,7 @@ mod tests {
             temp.path().to_path_buf(),
             ProjectQueueOptions {
                 rounds: NonZeroUsize::new(1).expect("rounds"),
+                strict_rounds: false,
                 turn_prompt: String::from("Continue"),
             },
             &clock,
@@ -900,6 +905,7 @@ mod tests {
             temp.path().to_path_buf(),
             ProjectQueueOptions {
                 rounds: NonZeroUsize::new(1).expect("rounds"),
+                strict_rounds: false,
                 turn_prompt: String::from("Continue"),
             },
             &clock,
@@ -929,6 +935,7 @@ mod tests {
             temp.path().to_path_buf(),
             ProjectQueueOptions {
                 rounds: NonZeroUsize::new(2).expect("rounds"),
+                strict_rounds: false,
                 turn_prompt: String::from("Continue"),
             },
             &clock,
@@ -1011,6 +1018,7 @@ mod tests {
             temp.path().to_path_buf(),
             ProjectQueueOptions {
                 rounds: NonZeroUsize::new(1).expect("rounds"),
+                strict_rounds: false,
                 turn_prompt: String::from("Continue"),
             },
             &clock,

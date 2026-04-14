@@ -24,6 +24,7 @@ use codex_protocol::protocol::SessionConfiguredEvent;
 #[derive(Debug, Clone)]
 pub struct PotterRoundEventBridgeConfig {
     pub record_round_configured: bool,
+    pub strict_rounds: bool,
 
     pub workdir: PathBuf,
     pub progress_file_rel: PathBuf,
@@ -48,6 +49,7 @@ pub struct PotterRoundEventBridge {
     workdir: PathBuf,
     progress_file_rel: PathBuf,
     potter_xmodel_runtime: bool,
+    strict_rounds: bool,
     user_prompt_file: PathBuf,
     git_commit_start: String,
     potter_rollout_path: PathBuf,
@@ -66,6 +68,7 @@ impl PotterRoundEventBridge {
             workdir: config.workdir,
             progress_file_rel: config.progress_file_rel,
             potter_xmodel_runtime: config.potter_xmodel_runtime,
+            strict_rounds: config.strict_rounds,
             user_prompt_file: config.user_prompt_file,
             git_commit_start: config.git_commit_start,
             potter_rollout_path: config.potter_rollout_path,
@@ -123,7 +126,9 @@ impl PotterRoundEventBridge {
                             potter_xmodel_enabled,
                             self.session_model.as_deref(),
                         );
-                    if should_emit_project_succeeded {
+                    if should_emit_project_succeeded
+                        && (!self.strict_rounds || self.round_current >= self.round_total)
+                    {
                         let git_commit_end =
                             crate::workflow::project::resolve_git_commit(&self.workdir);
                         crate::workflow::rollout::append_line(
@@ -269,6 +274,7 @@ potter.xmodel: {potter_xmodel}
 
         let mut bridge = PotterRoundEventBridge::new(PotterRoundEventBridgeConfig {
             record_round_configured: true,
+            strict_rounds: false,
             workdir: workdir.to_path_buf(),
             progress_file_rel: PathBuf::from(".codexpotter/projects/2026/03/04/1/MAIN.md"),
             potter_xmodel_runtime: false,
@@ -314,6 +320,7 @@ potter.xmodel: {potter_xmodel}
 
         let mut bridge = PotterRoundEventBridge::new(PotterRoundEventBridgeConfig {
             record_round_configured: true,
+            strict_rounds: false,
             workdir: workdir.to_path_buf(),
             progress_file_rel: PathBuf::from(".codexpotter/projects/2026/03/04/1/MAIN.md"),
             potter_xmodel_runtime: false,
@@ -362,6 +369,7 @@ potter.xmodel: {potter_xmodel}
         let potter_rollout_path = workdir.join("potter-rollout.jsonl");
         let mut bridge = PotterRoundEventBridge::new(PotterRoundEventBridgeConfig {
             record_round_configured: false,
+            strict_rounds: false,
             workdir: workdir.to_path_buf(),
             progress_file_rel: progress_file_rel.clone(),
             potter_xmodel_runtime: false,
@@ -413,6 +421,7 @@ potter.xmodel: {potter_xmodel}
         let potter_rollout_path = workdir.join("potter-rollout.jsonl");
         let mut bridge = PotterRoundEventBridge::new(PotterRoundEventBridgeConfig {
             record_round_configured: false,
+            strict_rounds: false,
             workdir: workdir.to_path_buf(),
             progress_file_rel: progress_file_rel.clone(),
             potter_xmodel_runtime: false,
@@ -457,6 +466,7 @@ potter.xmodel: {potter_xmodel}
         let potter_rollout_path = workdir.join("potter-rollout.jsonl");
         let mut bridge = PotterRoundEventBridge::new(PotterRoundEventBridgeConfig {
             record_round_configured: false,
+            strict_rounds: false,
             workdir: workdir.to_path_buf(),
             progress_file_rel: progress_file_rel.clone(),
             potter_xmodel_runtime: false,
@@ -510,6 +520,7 @@ potter.xmodel: {potter_xmodel}
         let potter_rollout_path = workdir.join("potter-rollout.jsonl");
         let mut bridge = PotterRoundEventBridge::new(PotterRoundEventBridgeConfig {
             record_round_configured: false,
+            strict_rounds: false,
             workdir: workdir.to_path_buf(),
             progress_file_rel: progress_file_rel.clone(),
             potter_xmodel_runtime: true,
@@ -563,6 +574,7 @@ potter.xmodel: {potter_xmodel}
         let potter_rollout_path = workdir.join("potter-rollout.jsonl");
         let mut bridge = PotterRoundEventBridge::new(PotterRoundEventBridgeConfig {
             record_round_configured: false,
+            strict_rounds: false,
             workdir: workdir.to_path_buf(),
             progress_file_rel: progress_file_rel.clone(),
             potter_xmodel_runtime: false,
@@ -610,6 +622,7 @@ potter.xmodel: {potter_xmodel}
         let potter_rollout_path = workdir.join("potter-rollout.jsonl");
         let mut bridge = PotterRoundEventBridge::new(PotterRoundEventBridgeConfig {
             record_round_configured: false,
+            strict_rounds: false,
             workdir: workdir.to_path_buf(),
             progress_file_rel: progress_file_rel.clone(),
             potter_xmodel_runtime: false,
@@ -649,6 +662,7 @@ potter.xmodel: {potter_xmodel}
 
         let mut bridge = PotterRoundEventBridge::new(PotterRoundEventBridgeConfig {
             record_round_configured: false,
+            strict_rounds: false,
             workdir: workdir.to_path_buf(),
             progress_file_rel: progress_file_rel.clone(),
             potter_xmodel_runtime: false,

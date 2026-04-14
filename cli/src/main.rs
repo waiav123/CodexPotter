@@ -94,6 +94,14 @@ struct Cli {
     #[arg(long, default_value = "10", global = true)]
     rounds: NonZeroUsize,
 
+    /// Strictly run exactly this many rounds unless the process is manually interrupted or hits a
+    /// non-recoverable runtime failure.
+    ///
+    /// When set, this overrides `--rounds` and disables CodexPotter's normal early-stop behavior
+    /// for `finite_incantatem: true` until the final configured round.
+    #[arg(long, global = true)]
+    strict_rounds: Option<NonZeroUsize>,
+
     /// Sandbox mode to request from Codex.
     ///
     /// `default` matches codex-cli behavior: no `--sandbox` flag is passed to the app-server and
@@ -123,6 +131,16 @@ struct Cli {
 
     #[command(subcommand)]
     command: Option<CliCommand>,
+}
+
+impl Cli {
+    fn effective_rounds(&self) -> NonZeroUsize {
+        self.strict_rounds.unwrap_or(self.rounds)
+    }
+
+    fn strict_rounds_enabled(&self) -> bool {
+        self.strict_rounds.is_some()
+    }
 }
 
 #[derive(Subcommand, Debug)]
@@ -246,6 +264,8 @@ fn load_exec_human_verbosity(cli_override: Option<CliVerbosity>) -> codex_tui::V
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> anyhow::Result<()> {
     let cli = parse_cli();
+    let effective_rounds = cli.effective_rounds();
+    let strict_rounds = cli.strict_rounds_enabled();
     let backend_launch = crate::app_server::AppServerLaunchConfig::from_cli(
         cli.sandbox,
         cli.dangerously_bypass_approvals_and_sandbox,
@@ -271,7 +291,8 @@ async fn main() -> anyhow::Result<()> {
                 &workdir,
                 prompt.clone(),
                 crate::exec::ExecRunConfig {
-                    rounds: cli.rounds,
+                    rounds: effective_rounds,
+                    strict_rounds,
                     codex_bin,
                     backend_launch,
                     potter_xmodel: cli.xmodel,
@@ -285,7 +306,8 @@ async fn main() -> anyhow::Result<()> {
                 &workdir,
                 prompt.clone(),
                 crate::exec::ExecRunConfig {
-                    rounds: cli.rounds,
+                    rounds: effective_rounds,
+                    strict_rounds,
                     codex_bin,
                     backend_launch,
                     potter_xmodel: cli.xmodel,
@@ -299,7 +321,7 @@ async fn main() -> anyhow::Result<()> {
         std::process::exit(exit_code);
     }
 
-    crate::rounds::round_budget_to_u32(cli.rounds)?;
+    crate::rounds::round_budget_to_u32(effective_rounds)?;
 
     let workdir = std::env::current_dir().context("resolve current directory")?;
     let codex_bin = resolve_codex_bin_or_exit(&cli.codex_bin);
@@ -320,7 +342,7 @@ async fn main() -> anyhow::Result<()> {
                 codex_bin,
                 backend_launch,
                 codex_compat_home,
-                rounds: cli.rounds,
+                rounds: effective_rounds,
                 upstream_cli_args,
                 potter_xmodel: cli.xmodel,
             },
@@ -394,9 +416,10 @@ async fn main() -> anyhow::Result<()> {
     let mut potter_app_server = crate::app_server::potter::PotterAppServerClient::spawn(
         workdir.clone(),
         codex_bin.clone(),
-        cli.rounds,
+        effective_rounds,
         backend_launch,
         cli.xmodel,
+        strict_rounds,
         cli.upstream_cli_args.clone(),
     )
     .await
@@ -458,7 +481,8 @@ async fn main() -> anyhow::Result<()> {
                 &mut potter_app_server,
                 &workdir,
                 &project_path,
-                cli.rounds,
+                effective_rounds,
+                strict_rounds,
             )
             .await
             .context("resume project")?;
@@ -500,7 +524,8 @@ async fn main() -> anyhow::Result<()> {
         &mut potter_app_server,
         project_queue_workdir.clone(),
         crate::workflow::project_runner::ProjectQueueOptions {
-            rounds: cli.rounds,
+            rounds: effective_rounds,
+            strict_rounds,
             turn_prompt: turn_prompt.clone(),
         },
     )
@@ -794,6 +819,8 @@ mod tests {
     fn rounds_must_be_at_least_one() {
         assert!(Cli::try_parse_from(["codex-potter", "--rounds", "0"]).is_err());
         assert!(Cli::try_parse_from(["codex-potter", "--rounds", "1"]).is_ok());
+        assert!(Cli::try_parse_from(["codex-potter", "--strict-rounds", "0"]).is_err());
+        assert!(Cli::try_parse_from(["codex-potter", "--strict-rounds", "1"]).is_ok());
     }
 
     #[test]
@@ -813,6 +840,8 @@ mod tests {
             "read-only",
             "--rounds",
             "3",
+            "--strict-rounds",
+            "7",
             "--codex-bin",
             "custom-codex",
             "--model",
@@ -834,6 +863,8 @@ mod tests {
         assert!(cli.xmodel);
         assert_eq!(cli.sandbox, CliSandbox::ReadOnly);
         assert_eq!(cli.rounds.get(), 3);
+        assert_eq!(cli.strict_rounds.expect("strict rounds").get(), 7);
+        assert_eq!(cli.effective_rounds().get(), 7);
         assert_eq!(cli.codex_bin, "custom-codex");
         assert_eq!(cli.upstream_cli_args.model.as_deref(), Some("o3"));
         assert_eq!(cli.upstream_cli_args.profile.as_deref(), Some("my-profile"));
@@ -918,6 +949,23 @@ mod tests {
         assert_eq!(prompt, Some("hello".to_string()));
         assert!(!json);
         assert_eq!(verbosity, None);
+    }
+
+    #[test]
+    fn strict_rounds_override_rounds() {
+        let cli = Cli::try_parse_from([
+            "codex-potter",
+            "--rounds",
+            "5",
+            "--strict-rounds",
+            "100",
+        ])
+        .expect("parse args");
+
+        assert_eq!(cli.rounds.get(), 5);
+        assert_eq!(cli.strict_rounds.expect("strict").get(), 100);
+        assert_eq!(cli.effective_rounds().get(), 100);
+        assert!(cli.strict_rounds_enabled());
     }
 
     #[test]

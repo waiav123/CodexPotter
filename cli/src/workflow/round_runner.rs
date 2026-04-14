@@ -73,6 +73,7 @@ pub struct PotterRoundContext {
     pub user_prompt_file: PathBuf,
     pub git_commit_start: String,
     pub potter_rollout_path: PathBuf,
+    pub strict_rounds: bool,
     pub project_started_at: Instant,
 }
 
@@ -301,6 +302,7 @@ async fn run_potter_round_inner(
         let mut bridge = super::round_event_bridge::PotterRoundEventBridge::new(
             super::round_event_bridge::PotterRoundEventBridgeConfig {
                 record_round_configured,
+                strict_rounds: context.strict_rounds,
                 workdir: context.workdir.clone(),
                 progress_file_rel: context.progress_file_rel.clone(),
                 potter_xmodel_runtime: context.potter_xmodel_runtime,

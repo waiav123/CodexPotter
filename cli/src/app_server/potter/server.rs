@@ -37,6 +37,8 @@ use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::mpsc::unbounded_channel;
 use tokio::sync::watch;
 
+use crate::workflow::runtime_log::PotterRuntimeDiagnosticReason;
+
 use crate::app_server::potter::POTTER_EVENT_NOTIFICATION_METHOD;
 use crate::app_server::potter::PotterAppServerClientNotification;
 use crate::app_server::potter::PotterAppServerClientRequest;
@@ -451,6 +453,7 @@ async fn start_project(
         user_message,
         cwd,
         rounds,
+        strict_rounds,
         event_mode,
     } = params;
 
@@ -470,6 +473,8 @@ async fn start_project(
     let project_dir_abs = workdir.join(&project_dir_rel);
 
     let potter_rollout_path = crate::workflow::rollout::potter_rollout_path(&project_dir_abs);
+    let potter_runtime_log_path =
+        crate::workflow::runtime_log::potter_runtime_log_path(&project_dir_abs);
     let git_branch = crate::workflow::project::progress_file_git_branch(&progress_file_abs)
         .context("read git_branch from progress file")?;
 
@@ -481,6 +486,8 @@ async fn start_project(
     let mode = event_mode.unwrap_or_default();
 
     let project_id = progress_file_abs.to_string_lossy().to_string();
+    crate::workflow::runtime_log::append_session_started(&potter_runtime_log_path, "fresh_start")
+        .context("append potter-runtime session_started")?;
     spawn_fresh_project(
         &mut state.running,
         &mut state.resumed,
@@ -495,7 +502,9 @@ async fn start_project(
             progress_file_rel: init.progress_file_rel.clone(),
             git_commit_start: init.git_commit_start.clone(),
             potter_rollout_path,
+            potter_runtime_log_path,
             rounds_total: rounds_total_u32,
+            strict_rounds,
             potter_xmodel_force_gpt_5_4: false,
             event_mode: mode,
             project_started_at: Instant::now(),
@@ -577,6 +586,7 @@ async fn start_rounds(
     let ProjectStartRoundsParams {
         project_id,
         rounds,
+        strict_rounds,
         resume_policy,
         event_mode,
     } = params;
@@ -597,6 +607,8 @@ async fn start_rounds(
 
     let potter_rollout_path =
         crate::workflow::rollout::potter_rollout_path(&resumed.resolved.project_dir);
+    let potter_runtime_log_path =
+        crate::workflow::runtime_log::potter_runtime_log_path(&resumed.resolved.project_dir);
 
     // Resume continuation always starts a new iteration window; reset the progress file flag.
     crate::workflow::project::set_progress_file_finite_incantatem(
@@ -612,6 +624,12 @@ async fn start_rounds(
     )
     .context("read git_commit from progress file")?;
 
+    crate::workflow::runtime_log::append_session_started(
+        &potter_runtime_log_path,
+        "resume_start_rounds",
+    )
+    .context("append potter-runtime session_started")?;
+
     spawn_resumed_project(
         &mut state.running,
         &mut state.resumed,
@@ -623,7 +641,9 @@ async fn start_rounds(
             resumed,
             git_commit_start,
             potter_rollout_path,
+            potter_runtime_log_path,
             rounds_total: rounds_total_u32,
+            strict_rounds,
             potter_xmodel_force_gpt_5_4: false,
             resume_policy,
             event_mode: mode,
@@ -773,6 +793,11 @@ fn resolve_interrupt_project(
                     );
                     plan.initial_continue_round = Some(interrupted.continue_round);
                     plan.initial_continue_prompt = Some(turn_prompt_override);
+                    crate::workflow::runtime_log::append_session_started(
+                        &plan.potter_runtime_log_path,
+                        "continue_after_interrupt",
+                    )
+                    .context("append potter-runtime session_started")?;
                     spawn_fresh_project(
                         &mut state.running,
                         &mut state.resumed,
@@ -786,6 +811,11 @@ fn resolve_interrupt_project(
                 InterruptedProjectPlan::Resumed(mut plan) => {
                     plan.initial_continue_round = Some(interrupted.continue_round);
                     plan.initial_continue_prompt = Some(turn_prompt_override);
+                    crate::workflow::runtime_log::append_session_started(
+                        &plan.potter_runtime_log_path,
+                        "continue_after_interrupt",
+                    )
+                    .context("append potter-runtime session_started")?;
                     spawn_resumed_project(
                         &mut state.running,
                         &mut state.resumed,
@@ -1046,7 +1076,9 @@ struct FreshProjectPlan {
     progress_file_rel: PathBuf,
     git_commit_start: String,
     potter_rollout_path: PathBuf,
+    potter_runtime_log_path: PathBuf,
     rounds_total: u32,
+    strict_rounds: bool,
     potter_xmodel_force_gpt_5_4: bool,
     event_mode: PotterEventMode,
     project_started_at: Instant,
@@ -1078,7 +1110,9 @@ struct ResumedProjectPlan {
     resumed: ResumedProject,
     git_commit_start: String,
     potter_rollout_path: PathBuf,
+    potter_runtime_log_path: PathBuf,
     rounds_total: u32,
+    strict_rounds: bool,
     potter_xmodel_force_gpt_5_4: bool,
     resume_policy: ResumePolicy,
     event_mode: PotterEventMode,
@@ -1258,6 +1292,37 @@ fn extend_round_total_if_needed(
     Ok(())
 }
 
+fn classify_runtime_diagnostic_reason(message: &str) -> PotterRuntimeDiagnosticReason {
+    let normalized = message.to_ascii_lowercase();
+    if normalized.contains("event stream closed unexpectedly")
+        || normalized.contains("app-server stdout closed")
+    {
+        PotterRuntimeDiagnosticReason::EventStreamClosed
+    } else if normalized.contains("failed to run `codex app-server`")
+        || normalized.contains("spawn codex app-server")
+        || normalized.contains("spawn `codex app-server`")
+    {
+        PotterRuntimeDiagnosticReason::BackendSpawnFailed
+    } else {
+        PotterRuntimeDiagnosticReason::RuntimeError
+    }
+}
+
+fn append_runtime_diagnostic_for_message(
+    path: &Path,
+    round_current: u32,
+    round_total: u32,
+    message: &str,
+) {
+    let _ = crate::workflow::runtime_log::append_diagnostic(
+        path,
+        classify_runtime_diagnostic_reason(message),
+        Some(round_current),
+        Some(round_total),
+        message,
+    );
+}
+
 async fn run_fresh_project(
     config: PotterAppServerConfig,
     writer_tx: UnboundedSender<JSONRPCMessage>,
@@ -1296,6 +1361,7 @@ async fn run_fresh_project(
         user_prompt_file: plan.progress_file_rel.clone(),
         git_commit_start: plan.git_commit_start.clone(),
         potter_rollout_path: plan.potter_rollout_path.clone(),
+        strict_rounds: plan.strict_rounds,
         project_started_at: plan.project_started_at,
     };
 
@@ -1311,6 +1377,12 @@ async fn run_fresh_project(
     let mut next_round_index = plan.round_start_index;
 
     if let Some(initial_continue_round) = plan.initial_continue_round.clone() {
+        crate::workflow::runtime_log::append_round_started(
+            &plan.potter_runtime_log_path,
+            initial_continue_round.round_current,
+            initial_continue_round.round_total,
+        )
+        .context("append potter-runtime round_started")?;
         let continue_prompt = plan
             .initial_continue_prompt
             .as_deref()
@@ -1329,6 +1401,12 @@ async fn run_fresh_project(
             Ok(result) => result,
             Err(err) => {
                 let message = format!("{err:#}");
+                append_runtime_diagnostic_for_message(
+                    &plan.potter_runtime_log_path,
+                    initial_continue_round.round_current,
+                    initial_continue_round.round_total,
+                    &message,
+                );
                 ui.synthesize_round_fatal_closure(&message);
                 outcome = PotterProjectOutcome::Fatal { message };
                 ui.emit_marker(EventMsg::PotterProjectCompleted { outcome });
@@ -1352,14 +1430,26 @@ async fn run_fresh_project(
                             "xmodel round budget overflow",
                         )?;
                     } else {
-                        outcome = PotterProjectOutcome::Succeeded;
-                        ui.emit_marker(EventMsg::PotterProjectCompleted { outcome });
-                        return Ok(ProjectRunExit::Completed);
+                        if !plan.strict_rounds
+                            || initial_continue_round.round_current
+                                >= initial_continue_round.round_total
+                        {
+                            outcome = PotterProjectOutcome::Succeeded;
+                            ui.emit_marker(EventMsg::PotterProjectCompleted { outcome });
+                            return Ok(ProjectRunExit::Completed);
+                        }
                     }
                 }
                 next_round_index = initial_continue_round.round_current;
             }
             codex_tui::ExitReason::Interrupted => {
+                let _ = crate::workflow::runtime_log::append_diagnostic(
+                    &plan.potter_runtime_log_path,
+                    PotterRuntimeDiagnosticReason::ManualInterrupt,
+                    Some(initial_continue_round.round_current),
+                    Some(initial_continue_round.round_total),
+                    "manual interrupt",
+                );
                 let continuation_plan = plan.continuation_after_interrupt(
                     initial_continue_round.round_current.saturating_sub(1),
                 );
@@ -1385,11 +1475,23 @@ async fn run_fresh_project(
                 })));
             }
             codex_tui::ExitReason::TaskFailed(message) => {
+                append_runtime_diagnostic_for_message(
+                    &plan.potter_runtime_log_path,
+                    initial_continue_round.round_current,
+                    initial_continue_round.round_total,
+                    &message,
+                );
                 outcome = PotterProjectOutcome::TaskFailed { message };
                 ui.emit_marker(EventMsg::PotterProjectCompleted { outcome });
                 return Ok(ProjectRunExit::Completed);
             }
             codex_tui::ExitReason::Fatal(message) => {
+                append_runtime_diagnostic_for_message(
+                    &plan.potter_runtime_log_path,
+                    initial_continue_round.round_current,
+                    initial_continue_round.round_total,
+                    &message,
+                );
                 // Fatal rounds still consume round budget, but should not prevent later rounds
                 // from running unless this was the last available round.
                 if initial_continue_round.round_current >= initial_continue_round.round_total {
@@ -1400,6 +1502,13 @@ async fn run_fresh_project(
                 next_round_index = initial_continue_round.round_current;
             }
             codex_tui::ExitReason::UserRequested => {
+                let _ = crate::workflow::runtime_log::append_diagnostic(
+                    &plan.potter_runtime_log_path,
+                    PotterRuntimeDiagnosticReason::ManualInterrupt,
+                    Some(initial_continue_round.round_current),
+                    Some(initial_continue_round.round_total),
+                    "user requested",
+                );
                 outcome = PotterProjectOutcome::Fatal {
                     message: String::from("user requested"),
                 };
@@ -1412,6 +1521,12 @@ async fn run_fresh_project(
     let mut round_index = next_round_index;
     while round_index < plan.rounds_total {
         let current_round = round_index.saturating_add(1);
+        crate::workflow::runtime_log::append_round_started(
+            &plan.potter_runtime_log_path,
+            current_round,
+            plan.rounds_total,
+        )
+        .context("append potter-runtime round_started")?;
         let project_started = if plan.emit_project_started_event && round_index == 0 {
             Some(crate::workflow::round_runner::PotterProjectStartedInfo {
                 user_message: Some(plan.user_message.clone()),
@@ -1442,6 +1557,12 @@ async fn run_fresh_project(
             Ok(result) => result,
             Err(err) => {
                 let message = format!("{err:#}");
+                append_runtime_diagnostic_for_message(
+                    &plan.potter_runtime_log_path,
+                    current_round,
+                    plan.rounds_total,
+                    &message,
+                );
                 ui.synthesize_round_fatal_closure(&message);
                 outcome = PotterProjectOutcome::Fatal { message };
                 break;
@@ -1467,14 +1588,23 @@ async fn run_fresh_project(
                         continue;
                     }
 
-                    outcome = PotterProjectOutcome::Succeeded;
-                    break;
+                    if !plan.strict_rounds || current_round >= plan.rounds_total {
+                        outcome = PotterProjectOutcome::Succeeded;
+                        break;
+                    }
                 }
                 if round_index.saturating_add(1) >= plan.rounds_total {
                     outcome = PotterProjectOutcome::BudgetExhausted;
                 }
             }
             codex_tui::ExitReason::Interrupted => {
+                let _ = crate::workflow::runtime_log::append_diagnostic(
+                    &plan.potter_runtime_log_path,
+                    PotterRuntimeDiagnosticReason::ManualInterrupt,
+                    Some(current_round),
+                    Some(plan.rounds_total),
+                    "manual interrupt",
+                );
                 let continuation_plan = plan.continuation_after_interrupt(round_index);
                 let continue_round = interrupted_continue_round(
                     round_result.thread_id,
@@ -1498,10 +1628,22 @@ async fn run_fresh_project(
                 })));
             }
             codex_tui::ExitReason::TaskFailed(message) => {
+                append_runtime_diagnostic_for_message(
+                    &plan.potter_runtime_log_path,
+                    current_round,
+                    plan.rounds_total,
+                    &message,
+                );
                 outcome = PotterProjectOutcome::TaskFailed { message };
                 break;
             }
             codex_tui::ExitReason::Fatal(message) => {
+                append_runtime_diagnostic_for_message(
+                    &plan.potter_runtime_log_path,
+                    current_round,
+                    plan.rounds_total,
+                    &message,
+                );
                 // Fatal rounds are project-local failures. Preserve the fatal outcome only when
                 // no later round remains to recover within the current project budget.
                 if round_index.saturating_add(1) >= plan.rounds_total {
@@ -1510,6 +1652,13 @@ async fn run_fresh_project(
                 }
             }
             codex_tui::ExitReason::UserRequested => {
+                let _ = crate::workflow::runtime_log::append_diagnostic(
+                    &plan.potter_runtime_log_path,
+                    PotterRuntimeDiagnosticReason::ManualInterrupt,
+                    Some(current_round),
+                    Some(plan.rounds_total),
+                    "user requested",
+                );
                 outcome = PotterProjectOutcome::Fatal {
                     message: String::from("user requested"),
                 };
@@ -1542,7 +1691,9 @@ async fn run_resumed_project(
         resumed,
         git_commit_start,
         potter_rollout_path,
+        potter_runtime_log_path,
         mut rounds_total,
+        strict_rounds,
         mut potter_xmodel_force_gpt_5_4,
         resume_policy,
         event_mode,
@@ -1574,6 +1725,7 @@ async fn run_resumed_project(
         user_prompt_file: resumed.progress_file_rel.clone(),
         git_commit_start: git_commit_start.clone(),
         potter_rollout_path: potter_rollout_path.clone(),
+        strict_rounds,
         project_started_at,
     };
 
@@ -1599,7 +1751,9 @@ async fn run_resumed_project(
         resumed: resumed.clone(),
         git_commit_start: git_commit_start.clone(),
         potter_rollout_path: round_context.potter_rollout_path.clone(),
+        potter_runtime_log_path: potter_runtime_log_path.clone(),
         rounds_total,
+        strict_rounds,
         potter_xmodel_force_gpt_5_4,
         resume_policy,
         event_mode,
@@ -1665,6 +1819,12 @@ async fn run_resumed_project(
     let mut outcome = PotterProjectOutcome::BudgetExhausted;
 
     if let Some(initial_continue_round) = initial_continue_round.clone() {
+        crate::workflow::runtime_log::append_round_started(
+            &potter_runtime_log_path,
+            initial_continue_round.round_current,
+            initial_continue_round.round_total,
+        )
+        .context("append potter-runtime round_started")?;
         let continue_prompt = initial_continue_prompt
             .as_deref()
             .context("missing initial continue prompt for resumed round")?;
@@ -1684,6 +1844,12 @@ async fn run_resumed_project(
             Ok(result) => result,
             Err(err) => {
                 let message = format!("{err:#}");
+                append_runtime_diagnostic_for_message(
+                    &potter_runtime_log_path,
+                    initial_continue_round.round_current,
+                    initial_continue_round.round_total,
+                    &message,
+                );
                 ui.synthesize_round_fatal_closure(&message);
                 outcome = PotterProjectOutcome::Fatal { message };
                 ui.emit_marker(EventMsg::PotterProjectCompleted { outcome });
@@ -1711,9 +1877,11 @@ async fn run_resumed_project(
                         )?;
                         ignored_finite_incantatem = true;
                     } else {
-                        outcome = PotterProjectOutcome::Succeeded;
-                        ui.emit_marker(EventMsg::PotterProjectCompleted { outcome });
-                        return Ok(ProjectRunExit::Completed);
+                        if !strict_rounds || rounds_run >= rounds_total {
+                            outcome = PotterProjectOutcome::Succeeded;
+                            ui.emit_marker(EventMsg::PotterProjectCompleted { outcome });
+                            return Ok(ProjectRunExit::Completed);
+                        }
                     }
                 }
                 rounds_run = initial_continue_round.project_rounds_run;
@@ -1732,6 +1900,13 @@ async fn run_resumed_project(
                 next_round_current = initial_continue_round.round_current.saturating_add(1);
             }
             codex_tui::ExitReason::Interrupted => {
+                let _ = crate::workflow::runtime_log::append_diagnostic(
+                    &potter_runtime_log_path,
+                    PotterRuntimeDiagnosticReason::ManualInterrupt,
+                    Some(initial_continue_round.round_current),
+                    Some(initial_continue_round.round_total),
+                    "manual interrupt",
+                );
                 let continue_round = interrupted_continue_round(
                     round_result.thread_id,
                     initial_continue_round.round_current,
@@ -1750,11 +1925,23 @@ async fn run_resumed_project(
                 })));
             }
             codex_tui::ExitReason::TaskFailed(message) => {
+                append_runtime_diagnostic_for_message(
+                    &potter_runtime_log_path,
+                    initial_continue_round.round_current,
+                    initial_continue_round.round_total,
+                    &message,
+                );
                 outcome = PotterProjectOutcome::TaskFailed { message };
                 ui.emit_marker(EventMsg::PotterProjectCompleted { outcome });
                 return Ok(ProjectRunExit::Completed);
             }
             codex_tui::ExitReason::Fatal(message) => {
+                append_runtime_diagnostic_for_message(
+                    &potter_runtime_log_path,
+                    initial_continue_round.round_current,
+                    initial_continue_round.round_total,
+                    &message,
+                );
                 // Continuing an unfinished round still consumes one round from the resumed
                 // iteration window. Only the final available round should end the project fatally.
                 rounds_run = initial_continue_round.project_rounds_run;
@@ -1770,6 +1957,13 @@ async fn run_resumed_project(
                 next_round_current = initial_continue_round.round_current.saturating_add(1);
             }
             codex_tui::ExitReason::UserRequested => {
+                let _ = crate::workflow::runtime_log::append_diagnostic(
+                    &potter_runtime_log_path,
+                    PotterRuntimeDiagnosticReason::ManualInterrupt,
+                    Some(initial_continue_round.round_current),
+                    Some(initial_continue_round.round_total),
+                    "user requested",
+                );
                 outcome = PotterProjectOutcome::Fatal {
                     message: String::from("user requested"),
                 };
@@ -1782,6 +1976,12 @@ async fn run_resumed_project(
     while rounds_run < rounds_total {
         let current_round = next_round_current;
         let project_rounds_run = rounds_run.saturating_add(1);
+        crate::workflow::runtime_log::append_round_started(
+            &potter_runtime_log_path,
+            current_round,
+            display_round_total,
+        )
+        .context("append potter-runtime round_started")?;
         let round_result = crate::workflow::round_runner::run_potter_round(
             &mut ui,
             &round_context,
@@ -1800,6 +2000,12 @@ async fn run_resumed_project(
             Ok(result) => result,
             Err(err) => {
                 let message = format!("{err:#}");
+                append_runtime_diagnostic_for_message(
+                    &potter_runtime_log_path,
+                    current_round,
+                    display_round_total,
+                    &message,
+                );
                 ui.synthesize_round_fatal_closure(&message);
                 outcome = PotterProjectOutcome::Fatal { message };
                 break;
@@ -1836,14 +2042,23 @@ async fn run_resumed_project(
                         continue;
                     }
 
-                    outcome = PotterProjectOutcome::Succeeded;
-                    break;
+                    if !strict_rounds || rounds_run >= rounds_total {
+                        outcome = PotterProjectOutcome::Succeeded;
+                        break;
+                    }
                 }
                 if rounds_run >= rounds_total {
                     outcome = PotterProjectOutcome::BudgetExhausted;
                 }
             }
             codex_tui::ExitReason::Interrupted => {
+                let _ = crate::workflow::runtime_log::append_diagnostic(
+                    &potter_runtime_log_path,
+                    PotterRuntimeDiagnosticReason::ManualInterrupt,
+                    Some(current_round),
+                    Some(display_round_total),
+                    "manual interrupt",
+                );
                 let continue_round = interrupted_continue_round(
                     round_result.thread_id,
                     current_round,
@@ -1862,10 +2077,22 @@ async fn run_resumed_project(
                 })));
             }
             codex_tui::ExitReason::TaskFailed(message) => {
+                append_runtime_diagnostic_for_message(
+                    &potter_runtime_log_path,
+                    current_round,
+                    display_round_total,
+                    &message,
+                );
                 outcome = PotterProjectOutcome::TaskFailed { message };
                 break;
             }
             codex_tui::ExitReason::Fatal(message) => {
+                append_runtime_diagnostic_for_message(
+                    &potter_runtime_log_path,
+                    current_round,
+                    display_round_total,
+                    &message,
+                );
                 // Fatal rounds should not block later resumed rounds from running unless the
                 // resumed iteration budget is already exhausted.
                 if rounds_run >= rounds_total {
@@ -1874,6 +2101,13 @@ async fn run_resumed_project(
                 }
             }
             codex_tui::ExitReason::UserRequested => {
+                let _ = crate::workflow::runtime_log::append_diagnostic(
+                    &potter_runtime_log_path,
+                    PotterRuntimeDiagnosticReason::ManualInterrupt,
+                    Some(current_round),
+                    Some(display_round_total),
+                    "user requested",
+                );
                 outcome = PotterProjectOutcome::Fatal {
                     message: String::from("user requested"),
                 };
@@ -2653,7 +2887,9 @@ git_branch: "main"
             },
             git_commit_start: String::new(),
             potter_rollout_path: temp.path().join("potter-rollout.jsonl"),
+            potter_runtime_log_path: temp.path().join("potter-runtime.jsonl"),
             rounds_total: 1,
+            strict_rounds: false,
             potter_xmodel_force_gpt_5_4: false,
             resume_policy: ResumePolicy::ContinueUnfinishedRound,
             event_mode: PotterEventMode::Interactive,
@@ -3154,6 +3390,7 @@ git_branch: "main"
                     ProjectStartRoundsParams {
                         project_id: project_id.clone(),
                         rounds: Some(4),
+                        strict_rounds: false,
                         resume_policy: Some(ResumePolicy::StartNewRound),
                         event_mode: Some(PotterEventMode::Interactive),
                     },
@@ -3526,7 +3763,9 @@ git_branch: "main"
             progress_file_rel: PathBuf::from(".codexpotter/projects/2026/03/06/1/MAIN.md"),
             git_commit_start: String::new(),
             potter_rollout_path: workdir.join("potter-rollout.jsonl"),
+            potter_runtime_log_path: workdir.join("potter-runtime.jsonl"),
             rounds_total: 1,
+            strict_rounds: false,
             potter_xmodel_force_gpt_5_4: false,
             event_mode: PotterEventMode::Interactive,
             project_started_at: Instant::now(),
@@ -3597,7 +3836,9 @@ git_branch: "main"
             progress_file_rel: PathBuf::from(".codexpotter/projects/2026/03/06/1/MAIN.md"),
             git_commit_start: String::from("start"),
             potter_rollout_path: workdir.join("potter-rollout.jsonl"),
+            potter_runtime_log_path: workdir.join("potter-runtime.jsonl"),
             rounds_total: 3,
+            strict_rounds: false,
             potter_xmodel_force_gpt_5_4: false,
             event_mode: PotterEventMode::Interactive,
             project_started_at: Instant::now(),
@@ -3635,7 +3876,9 @@ git_branch: "main"
             progress_file_rel: PathBuf::from(".codexpotter/projects/2026/03/06/1/MAIN.md"),
             git_commit_start: String::from("start"),
             potter_rollout_path: workdir.join("potter-rollout.jsonl"),
+            potter_runtime_log_path: workdir.join("potter-runtime.jsonl"),
             rounds_total: 1,
+            strict_rounds: false,
             potter_xmodel_force_gpt_5_4: false,
             event_mode: PotterEventMode::Interactive,
             project_started_at: Instant::now(),
@@ -3683,7 +3926,9 @@ git_branch: "main"
             progress_file_rel: progress_file_rel.clone(),
             git_commit_start: String::from("start"),
             potter_rollout_path: workdir.join("potter-rollout.jsonl"),
+            potter_runtime_log_path: workdir.join("potter-runtime.jsonl"),
             rounds_total: 3,
+            strict_rounds: false,
             potter_xmodel_force_gpt_5_4: false,
             event_mode: PotterEventMode::Interactive,
             project_started_at: Instant::now(),

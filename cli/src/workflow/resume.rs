@@ -280,6 +280,7 @@ pub async fn run_resume(
     cwd: &Path,
     project_path: &Path,
     iterate_rounds: NonZeroUsize,
+    strict_rounds: bool,
 ) -> anyhow::Result<ResumeExit> {
     let mut buffered_events = Vec::new();
     let resume = app_server
@@ -304,7 +305,15 @@ pub async fn run_resume(
     // Best-effort; avoid emitting warnings here because stderr output can corrupt the TUI.
     let _ = crate::terminal_title::set_codexpotter_terminal_title(&resume.working_dir);
 
-    run_resume_with_deps(ui, app_server, resume, iterate_rounds, &SystemResumeClock).await
+    run_resume_with_deps(
+        ui,
+        app_server,
+        resume,
+        iterate_rounds,
+        strict_rounds,
+        &SystemResumeClock,
+    )
+    .await
 }
 
 async fn run_resume_with_deps<U, S, C>(
@@ -312,6 +321,7 @@ async fn run_resume_with_deps<U, S, C>(
     app_server: &mut S,
     resume: crate::app_server::potter::ProjectResumeResponse,
     iterate_rounds: NonZeroUsize,
+    strict_rounds: bool,
     clock: &C,
 ) -> anyhow::Result<ResumeExit>
 where
@@ -423,6 +433,7 @@ where
         .project_start_rounds(crate::app_server::potter::ProjectStartRoundsParams {
             project_id: project_id.clone(),
             rounds: Some(rounds),
+            strict_rounds,
             resume_policy: None,
             event_mode: Some(crate::app_server::potter::PotterEventMode::Interactive),
         })
@@ -1394,6 +1405,7 @@ mod tests {
             &mut app_server,
             resume,
             NonZeroUsize::new(1).expect("iterate rounds"),
+            false,
             &clock,
         )
         .await
@@ -1491,6 +1503,7 @@ mod tests {
             &mut app_server,
             resume,
             NonZeroUsize::new(1).expect("iterate rounds"),
+            false,
             &clock,
         )
         .await
@@ -1596,6 +1609,7 @@ mod tests {
             &mut app_server,
             resume,
             NonZeroUsize::new(1).expect("iterate rounds"),
+            false,
             &clock,
         )
         .await
@@ -1698,6 +1712,7 @@ mod tests {
             &mut app_server,
             resume,
             NonZeroUsize::new(2).expect("iterate rounds"),
+            false,
             &clock,
         )
         .await

@@ -240,6 +240,20 @@ mod tests {
     use pretty_assertions::assert_eq;
     use std::path::Path;
 
+    #[cfg(windows)]
+    fn is_windows_symlink_privilege_error(err: &std::io::Error) -> bool {
+        err.raw_os_error() == Some(1314)
+    }
+
+    #[cfg(windows)]
+    fn is_windows_symlink_privilege_anyhow(err: &anyhow::Error) -> bool {
+        err.chain().any(|cause| {
+            cause
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(is_windows_symlink_privilege_error)
+        })
+    }
+
     #[test]
     fn ensures_codex_compat_home_and_links() {
         let home_dir = tempfile::tempdir().expect("home dir");
@@ -255,8 +269,12 @@ mod tests {
                 }
             }
         }
-        let codex_home =
-            ensure_codex_compat_home(home_dir.path(), real_codex_home.path()).expect("ensure home");
+        let codex_home = match ensure_codex_compat_home(home_dir.path(), real_codex_home.path()) {
+            Ok(path) => path,
+            #[cfg(windows)]
+            Err(err) if is_windows_symlink_privilege_anyhow(&err) => return,
+            Err(err) => panic!("ensure home: {err:#}"),
+        };
 
         assert!(codex_home.is_dir());
 
@@ -317,15 +335,25 @@ mod tests {
 
         for entry in CODEX_COMPAT_ENTRIES {
             let link_path = codex_home.join(entry.name);
-            create_test_symlink(
+            let result = create_test_symlink(
                 &stale_target.path().join(entry.name),
                 &link_path,
                 entry.kind,
-            )
-            .unwrap_or_else(|err| panic!("create stale {} symlink: {err}", entry.name));
+            );
+            match result {
+                Ok(()) => {}
+                #[cfg(windows)]
+                Err(err) if is_windows_symlink_privilege_error(&err) => return,
+                Err(err) => panic!("create stale {} symlink: {err}", entry.name),
+            }
         }
 
-        ensure_codex_compat_home(home_dir.path(), real_codex_home.path()).expect("repair home");
+        match ensure_codex_compat_home(home_dir.path(), real_codex_home.path()) {
+            Ok(_) => {}
+            #[cfg(windows)]
+            Err(err) if is_windows_symlink_privilege_anyhow(&err) => return,
+            Err(err) => panic!("repair home: {err:#}"),
+        }
 
         for entry in CODEX_COMPAT_ENTRIES {
             let link_path = codex_home.join(entry.name);
