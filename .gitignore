@@ -1,6 +1,7 @@
 /target/
 /.codex/
 /.codexpotter/
+/.codexpotter-archive/
 AGENTS.override.md
 node_modules/
 dist/
